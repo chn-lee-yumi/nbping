@@ -1,18 +1,19 @@
 package main
 
 import (
-	"bufio"
+// 	"bufio"
 	"errors"
 	"flag"
 	"fmt"
 	"golang.org/x/net/icmp"
-	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 	"io/ioutil"
 	"math/rand"
 	"net"
 	"os"
 	"strings"
 	"time"
+	"encoding/json"
 )
 
 func Lookup(host string) (string, error) {
@@ -68,7 +69,7 @@ func main()  {
 	Pingok=0
 	//命令行参数
 	var ipfile string
-	flag.StringVar(&ipfile, "i", "ip.txt", "IP文件所在路径,,默认读取当前目录ip.txt")
+	flag.StringVar(&ipfile, "i", "ip.txt", "IP列表参数,以字符串隔开,for example: 192.168.0.1,1.1.1.1")
 	var output string
 	flag.StringVar(&output, "o", "out.csv", "结果输出文件所在路径,默认放在当前目录out.csv")
 	var num int
@@ -83,28 +84,29 @@ func main()  {
 		flag.Usage()
 		return
 	}
-	t:=time.Now() //取当前时间戳
+// 	t:=time.Now() //取当前时间戳
 	status := make(chan int, num)
 	req:=make(chan []string)
-	fmt.Println("正在加载IP资源文件....")
-	f, err := os.Open(ipfile)
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-	rd := bufio.NewReader(f)
-	LinsNum:=CountFileLine(ipfile)
-	ips:=[]string{}
-
-	for lines:=0;lines<=LinsNum;lines++ {
-		line, _ := rd.ReadString('\n') //以'\n'为结束符读入一行
-		line = strings.TrimSpace(line)
-		if len(line)>5 && len(strings.Split(line, "."))==4 {
-			ips=append(ips,line)
-		}
-	}
-	LinsNum=len(ips)
-	fmt.Println("IP资源加载完成,正在启动协程...")
+// 	fmt.Println("正在加载IP资源文件....")
+// 	f, err := os.Open(ipfile)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+// 	defer f.Close()
+// 	rd := bufio.NewReader(f)
+// 	LinsNum:=CountFileLine(ipfile)
+// 	ips:=[]string{}
+//
+// 	for lines:=0;lines<=LinsNum;lines++ {
+// 		line, _ := rd.ReadString('\n') //以'\n'为结束符读入一行
+// 		line = strings.TrimSpace(line)
+// 		if len(line)>5 && len(strings.Split(line, "."))==4 {
+// 			ips=append(ips,line)
+// 		}
+// 	}
+    ips:=strings.Split(ipfile,",")
+	LinsNum:=len(ips)
+// 	fmt.Println("IP资源加载完成,正在启动协程...")
 	for _,ip:=range ips{
 		status <- 1
 		go IPpingStart(ip,req,status)
@@ -113,6 +115,8 @@ func main()  {
 	fd,_:=os.OpenFile(output,os.O_RDWR|os.O_CREATE,0644)
 	title:=[]byte(strings_req[0]+","+strings_req[1]+"\n")
 	fd.Write(title)
+
+	failed_ips:= make([]map[string]string,0)
 	for i:=0;i<LinsNum;i++ {
 		strings_req=<-req
 		buf:=[]byte(strings_req[0]+","+strings_req[1]+"\n")
@@ -121,11 +125,14 @@ func main()  {
 			Pingok++
 		} else {
 			Pingerr++
+			failed_ips=append(failed_ips,map[string]string{"ip":strings_req[0],"alive":"false"})
 		}
 		fd.Write(buf)
 	}
 	fd.Close()
-	fmt.Println("批量ping已经完成!\n运行耗时: ",time.Since(t),"\nping成功主机数: ",Pingok,"\nping失败主机数: ",Pingerr,"\n主机总数: ",LinsNum)
+	output_json,_:=json.Marshal(failed_ips)
+    fmt.Println("{\"items\":",string(output_json),"}")
+// 	fmt.Println("批量ping已经完成!\n运行耗时: ",time.Since(t),"\nping成功主机数: ",Pingok,"\nping失败主机数: ",Pingerr,"\n主机总数: ",LinsNum)
 }
 
 //获取文件行数
@@ -144,7 +151,7 @@ func CountFileLine(name string) (count int) {
 func MarshalMsg(req int, data []byte) ([]byte, error) {
 	xid, xseq := os.Getpid()&0xffff, req
 	wm := icmp.Message{
-		Type: ipv4.ICMPTypeEcho, Code: 0,
+		Type: ipv6.ICMPTypeEchoRequest, Code: 0,
 		Body: &icmp.Echo{
 			ID: xid, Seq: xseq,
 			Data: data,
@@ -160,7 +167,7 @@ type ping struct {
 }
 
 func (self *ping) Dail() (err error) {
-	self.Conn, err = net.Dial("ip4:icmp", self.Addr)
+	self.Conn, err = net.Dial("ip6:ipv6-icmp", self.Addr)
 	if err != nil {
 		return err
 	}
@@ -199,6 +206,7 @@ func (self *ping) Ping(count int)(string) {
 	r := sendPingMsg(self.Conn, self.Data)
 	if r.Error != nil {
 		//失败
+// 		fmt.Println(r.Error)
 		return "is unreachable"
 	} else {
 		//成功
@@ -249,25 +257,26 @@ func sendPingMsg(c net.Conn, wb []byte) (reply Reply) {
 	}
 
 	duration := time.Now().Sub(start)
+// 	fmt.Println(rb[:n])
 	ttl := uint8(rb[8])
-	rb = func(b []byte) []byte {
-		if len(b) < 20 {
-			return b
-		}
-		hdrlen := int(b[0]&0x0f) << 2
-		return b[hdrlen:]
-	}(rb)
+// 	rb = func(b []byte) []byte {
+// 		if len(b) < 20 {
+// 			return b
+// 		}
+// 		hdrlen := int(b[0]&0x0f) << 2
+// 		return b[hdrlen:]
+// 	}(rb)
 	var rm *icmp.Message
-	rm, reply.Error = icmp.ParseMessage(1, rb[:n])
+	rm, reply.Error = icmp.ParseMessage(58, rb[:n])
 	if reply.Error != nil {
 		return
 	}
 
 	switch rm.Type {
-	case ipv4.ICMPTypeEchoReply:
+	case ipv6.ICMPTypeEchoReply:
 		t := int64(duration / time.Millisecond)
 		reply = Reply{t, ttl, nil}
-	case ipv4.ICMPTypeDestinationUnreachable:
+	case ipv6.ICMPTypeDestinationUnreachable:
 		reply.Error = errors.New("Destination Unreachable")
 	default:
 		reply.Error = fmt.Errorf("Not ICMPTypeEchoReply %v", rm)
